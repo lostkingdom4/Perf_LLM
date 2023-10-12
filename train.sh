@@ -1,0 +1,1 @@
+python FT.py --db True
