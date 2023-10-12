@@ -1,0 +1,8 @@
+/data/python_splits/train.jsonl
+/RRHF_output/pytorch_model.bin
+/model_param/model.pth
+/.idea/
+/__pycache__/
+/wandb/
+/testfield/
+/RRHF_output/
