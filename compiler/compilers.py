@@ -53,7 +53,7 @@ def compile_prog(filepath, lang):
     return err, op
 
 
-def execute_prog(filepath, lang, file_contents):
+def execute_prog(filepath, lang, file_contents,chunk_number):
     '''
     filepath: path of the file you would like to compile
     lang: prog. language; 'Py', 'Java', 'CPP', 'C', 'PHP', 'JS', 'CS'
@@ -62,8 +62,13 @@ def execute_prog(filepath, lang, file_contents):
     JS: Node.js (https://nodejs.org/en/download/)
     CS: Install mono library (brew install mono) (http://www.mono-project.com/Mono:OSX)
     '''
+    if chunk_number != None:
+        core_number = chunk_number
+    else:
+        core_number = 4
+
     if lang=='Py':
-        cmd = 'taskset -c 4 python3 '+ filepath
+        cmd = 'taskset -c {} python3 {}'.format(core_number, filepath)
         #cmd = 'pylint -E ' + filepath
     elif lang=='Java':
         cmd = 'javac '+filepath
@@ -84,7 +89,7 @@ def execute_prog(filepath, lang, file_contents):
         print('invalid argument')
         return
 
-    timeout_duration = 10  # for example, 10 seconds
+    timeout_duration = 5  # for example, 10 seconds
     start_time = time.time()
     #print("start subprocess")
     proc = subprocess.Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE,shell=True)
@@ -107,7 +112,7 @@ def execute_prog(filepath, lang, file_contents):
         proc.communicate()  # Ensure to consume the stdout and stderr to avoid deadlocks
         err = "Subprocess exceeded time limit and was terminated."
         op = ''
-        #print(err)
+        print(err)
 
     elapsed_time = end_time - start_time
     return err, op, elapsed_time

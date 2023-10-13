@@ -605,6 +605,7 @@ if __name__ == "__main__":
 		torch.save(test_dataset, training_args.output_dir+'datasets/test_dataset.pth')
 		torch.save(vali_dataset, training_args.output_dir+'datasets/vali_dataset.pth')
 
+	
 	train_sampler = RandomSampler(train_dataset)
 	test_sampler = SequentialSampler(test_dataset)
 	vali_sampler = RandomSampler(vali_dataset)
@@ -612,7 +613,7 @@ if __name__ == "__main__":
 	test_dataloader = DataLoader(test_dataset, sampler=test_sampler, batch_size=generate_args.batch_size,drop_last=True)
 	vali_dataloader = DataLoader(vali_dataset, sampler=vali_sampler, batch_size=generate_args.batch_size,drop_last=True)
 
-	
+	'''
 	compile_rate,pass_rate,Optimized_rate = Testorvali(generate_args,tokenizer,model,test_dataloader,"Testing")
 	if data_args.report:
 		wandb.log({
@@ -621,7 +622,7 @@ if __name__ == "__main__":
 			'Testing Optimized rate': Optimized_rate,
 			'Testing rl_step': RLsteps  # Logging the RL step can be helpful
 		})
-	
+	'''
 
 	for rsteps in range(training_args.RL_steps):
 		RLsteps = rsteps
