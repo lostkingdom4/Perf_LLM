@@ -12,10 +12,11 @@ import json
 import threading
 import time
 from threading import Thread
+import signal
 
 
 
-def compile_prog(filepath, lang):
+def compile_prog(filepath, lang,chunk_number):
     '''
     filepath: path of the file you would like to compile
     lang: prog. language; 'Py', 'Java', 'CPP', 'C', 'PHP', 'JS', 'CS'
@@ -24,8 +25,13 @@ def compile_prog(filepath, lang):
     JS: Node.js (https://nodejs.org/en/download/)
     CS: Install mono library (brew install mono) (http://www.mono-project.com/Mono:OSX)
     '''
+    if chunk_number != None:
+        core_number = chunk_number
+    else:
+        core_number = 4
+    
     if lang=='Py':
-        cmd = 'taskset -c 4 python3 -m py_compile '+filepath
+        cmd = 'taskset -c {} python3 -m py_compile {}'.format(core_number, filepath)
         #cmd = 'pylint -E ' + filepath
     elif lang=='Java':
         cmd = 'javac '+filepath
@@ -62,6 +68,8 @@ def execute_prog(filepath, lang, file_contents,chunk_number):
     JS: Node.js (https://nodejs.org/en/download/)
     CS: Install mono library (brew install mono) (http://www.mono-project.com/Mono:OSX)
     '''
+    def handler(signum, frame):
+        raise TimeoutError("Command timed out")    
     if chunk_number != None:
         core_number = chunk_number
     else:
@@ -90,23 +98,29 @@ def execute_prog(filepath, lang, file_contents,chunk_number):
         return
 
     timeout_duration = 5  # for example, 10 seconds
-    start_time = time.time()
+    #start_time = time.time()
     #print("start subprocess")
-    proc = subprocess.Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE,shell=True)
+    #signal.signal(signal.SIGALRM, handler)
+    #signal.alarm(5)
+    #proc = subprocess.Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE,shell=True)
     #print(proc.pid)
     try:
+        signal.signal(signal.SIGALRM, handler)
+        signal.alarm(timeout_duration)
+        start_time = time.time()
         #print(file_contents)
-        stdout_data, stderr_data = proc.communicate(input=file_contents.encode('utf-8'), timeout=timeout_duration)
-        proc.kill()
-        proc.communicate()
+        proc = subprocess.Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE,shell=True)
+        stdout_data, stderr_data = proc.communicate(input=file_contents.encode('utf-8'))
         end_time = time.time()
+        #proc.kill()
+        #proc.communicate()
         # Decoding the output and error
         op = stdout_data.decode('utf-8')
         err = stderr_data.decode('utf-8')
         #print(op, err)
         #print("end")
 
-    except TimeoutExpired:
+    except TimeoutError:
         end_time = time.time()
         proc.kill()  # Terminate the process if timeout occurs
         proc.communicate()  # Ensure to consume the stdout and stderr to avoid deadlocks
@@ -115,6 +129,7 @@ def execute_prog(filepath, lang, file_contents,chunk_number):
         print(err)
 
     elapsed_time = end_time - start_time
+    signal.alarm(0)
     return err, op, elapsed_time
 
 def execute_prog_thread(filepath, lang, file_contents):

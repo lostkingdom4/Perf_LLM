@@ -27,7 +27,8 @@ import wandb
 from datetime import datetime
 import time
 
-current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+import torch.multiprocessing as multiprocessing
+from functools import partial
 
 RLsteps = int()
 
@@ -63,7 +64,7 @@ class GenerateArguments:
 	load_from_model_path: str = field(default='./model_param/model.pth', metadata={"help": "save to model path"})
 	db: bool = field(default=False, metadata={"help": "debug mode"})
 	num_beams: int = field(default=5, metadata={"help": "number of beam search"})
-	num_return_sequences: int = field(default=3, metadata={"help": "num of return sequences for each input ids"})
+	num_return_sequences: int = field(default=4, metadata={"help": "num of return sequences for each input ids"})
 	output_code_path: str = field(default='./output/', metadata={"help": "path for temperary output code"})
 
 @dataclass
@@ -369,6 +370,55 @@ class RRHFTrainer(Trainer):
 			})
 		return (loss, scores) if return_outputs else loss
 
+def execute_chunk(args,tokenizer,problem,v0_time):
+	number_of_better_from_rs = 0
+	chunk_number, codes = args
+	scores = []
+	Compile_score = 1
+	pass_score = 1.3
+	Better_time_score = 2
+	for code in codes:
+		_,_,did_compile = lang2compiler["python"].compile_code_string(code,problem,chunk_number)
+		if did_compile:
+			a,b,pass_test,elapsed_time = lang2compiler["python"].execute_code_string(code,problem,chunk_number)
+			if pass_test:
+				if v0_time > elapsed_time:
+					scores.append(Better_time_score)
+				else:
+					scores.append(pass_score)
+			else:
+				scores.append(Compile_score)
+		else:
+			scores.append(0)
+	if Better_time_score in scores[-4:-1]:
+		number_of_better_from_rs_for_this_input += 1
+	return scores,number_of_better_from_rs
+
+def execute_in_multi_processes(codes:list, problem:str, v0_time, tokenizer, num_processes=4):
+	#print(codes)
+	scores = []
+	number_of_better_from_rs=0
+	if len(codes)%num_processes == 0:
+		length = len(codes)//num_processes
+	else:
+		length = len(codes)//num_processes + 1
+
+	indice = [(i*length, (i+1)*length) for i in range(num_processes)]
+	indice[-1] = ((num_processes-1)*length, len(codes))
+	#print(indice)
+	codes_chunks = [(i, codes[index[0]:index[1]]) for i,index in enumerate(indice)]
+
+	if multiprocessing.get_start_method(allow_none=True) is None:
+		multiprocessing.set_start_method('spawn')
+	with multiprocessing.Pool(num_processes) as pool:
+		partial_func = partial(execute_chunk, tokenizer=tokenizer,problem=problem,v0_time=v0_time)
+		results = pool.map(partial_func, codes_chunks)
+	for res in results:
+		for i in range(len(res[0])):
+			scores.append(res[0][i])
+		number_of_better_from_rs += res[1]
+	return scores,number_of_better_from_rs
+
 def generate(report, args,tokenizer,model,train_dataloader):
 
 	querys = []
@@ -378,58 +428,98 @@ def generate(report, args,tokenizer,model,train_dataloader):
 	Compile_score = 1
 	pass_score = 1.3
 	Better_time_score = 2
+	number_of_skips = 0
+	number_of_better_from_rs = 0
 
 	for batch in tqdm(train_dataloader,desc="Sampling data"):
 		input_ids,input_masks,target_ids,target_masks,problem_ids,v0_times = [t.to(args.device) for t in batch]
+		first_time = time.time()
+		v0_times = v0_times.tolist()
+		greedy_ids = model.generate(
+		    input_ids, 
+		    max_length=tokenizer.model_max_length, 
+		    do_sample=False, 
+		)
 		generated_ids = model.generate(input_ids, max_length=tokenizer.model_max_length, 
 										temperature = 1, top_k = 50,num_beams=1, 
-										do_sample=True, num_return_sequences=args.num_return_sequences)
+										do_sample=True, num_return_sequences=args.num_return_sequences-2)
+		#print(greedy_ids.shape)
 		#print(generated_ids.shape)
 		#print(target_ids.shape)
-		for j in range(args.batch_size):
-			for _ in range(args.num_return_sequences+1):
-				querys.append(input_ids[j])
 		#generated_strs = [tokenizer.decode(ids, skip_special_tokens=False, clean_up_tokenization_spaces=False) for ids in generated_ids]
+		second_time = time.time()
+		if greedy_ids.shape[-1] != tokenizer.model_max_length:
+			greedy_ids = F.pad(greedy_ids, (0, 512 - greedy_ids.size(-1)),'constant',tokenizer.pad_token_id)
 		if generated_ids.shape[-1] != tokenizer.model_max_length:
 			generated_ids = F.pad(generated_ids, (0, 512 - generated_ids.size(-1)),'constant',tokenizer.pad_token_id)
 		#print(generated_ids.shape)
+		greedy_ids = greedy_ids.view(args.batch_size,-1,tokenizer.model_max_length)
 		generated_ids = generated_ids.view(args.batch_size,-1,tokenizer.model_max_length)
+		#print(greedy_ids.shape)
+		#print(target_ids.unsqueeze(1).shape)
+		generated_ids = torch.cat((generated_ids,greedy_ids),dim=1)
 		generated_ids = torch.cat((generated_ids,target_ids.unsqueeze(1)),dim=1)
 		#print(generated_ids.shape)
 		for index, generated_ids4problem in enumerate(generated_ids):
 			problem = 'p'+str(problem_ids[index].item()).zfill(5)
 			v0_time = v0_times[index]
-			for ids in generated_ids4problem:
-				#print(ids)
-				responses.append(ids)
-			generated_strs = [tokenizer.decode(ids[1:], skip_special_tokens=False, 
-						clean_up_tokenization_spaces=False) for ids in generated_ids4problem]
-			for generated_str in generated_strs:
-				codes = remove_special_token(generated_str,tokenizer)
-				#print(codes)
-				#print(type(generated_str))
-				#print(remove_special_token(generated_str,tokenizer))
-				a,b,did_compile = lang2compiler["python"].compile_code_string(codes,problem)
-				#print(a)
-				#print(b)
-				#print(did_compile)
-				if did_compile:
-					a,b,pass_test,elapsed_time = lang2compiler["python"].execute_code_string(codes,problem)
-					if pass_test:
-						if v0_time > elapsed_time:
-							scores.append(Better_time_score)
+			if v0_time != 1000:
+				generated_strs = []
+				codes = []
+				for ids in generated_ids4problem:
+					#print(ids)
+					querys.append(input_ids[index])
+					responses.append(ids)
+					generated_strs.append(tokenizer.decode(ids[1:], skip_special_tokens=False, 
+							clean_up_tokenization_spaces=False))
+					#codes.append(remove_special_token(generated_strs[-1],tokenizer))
+				#scores,number_of_better_from_rs = execute_in_multi_processes(codes,problem,v0_time,tokenizer,args.num_return_sequences+1)
+				#print(scores,number_of_better_from_rs)
+				'''
+				for ids in generated_ids4problem:
+					#print(ids)
+					querys.append(input_ids[index])
+					responses.append(ids)
+				generated_strs = [tokenizer.decode(ids[1:], skip_special_tokens=False, 
+							clean_up_tokenization_spaces=False) for ids in generated_ids4problem]
+				'''
+
+				
+				for index_gen, generated_str in enumerate(generated_strs):
+					code = remove_special_token(generated_str,tokenizer)
+					codes.append(code)
+					#print(codes)
+					#print(type(generated_str))
+					#print(remove_special_token(generated_str,tokenizer))
+					a,b,did_compile = lang2compiler["python"].compile_code_string(code,problem,index_gen)
+					#print(a)
+					#print(b)
+					#print(did_compile)
+					if did_compile:
+						a,b,pass_test,elapsed_time = lang2compiler["python"].execute_code_string(code,problem,index_gen)
+						if pass_test:
+							if v0_time > elapsed_time:
+								scores.append(Better_time_score)
+							else:
+								scores.append(pass_score)
 						else:
-							scores.append(pass_score)
+							scores.append(Compile_score)
 					else:
-						scores.append(Compile_score)
-				else:
-					scores.append(0)
+						scores.append(0)
+				if Better_time_score in scores[-4:-1]:
+					number_of_better_from_rs += 1
+			else:
+				number_of_skips += 1
 		if count == 2 and args.db:
 			break
-		elif count ==20:
+		elif count ==40:
 			break
 
 		count += 1
+		third_time = time.time()
+		#print('time1: ', second_time-first_time)
+		#print('time2: ', third_time- second_time)
+	print('skip rate: ',number_of_skips/(args.batch_size*count))
 	querys = torch.stack(querys).cpu()
 	responses = torch.stack(responses).cpu()
 	scores = torch.tensor(scores)
@@ -440,6 +530,7 @@ def generate(report, args,tokenizer,model,train_dataloader):
 	print('Compile rate: ',Compile_rate+Passing_rate+Optimized_rate)
 	print('Passing rate: ',Passing_rate+Optimized_rate)
 	print('Optimized rate: ',Optimized_rate)
+	print('rate of better from rs: ',number_of_better_from_rs/(args.batch_size*count))
 	#print(querys.shape)
 	#print(responses.shape)
 	if report:
@@ -447,6 +538,7 @@ def generate(report, args,tokenizer,model,train_dataloader):
 			'Compile rate': Compile_rate+Passing_rate+Optimized_rate,
 			'Passing rate': Passing_rate+Optimized_rate,
 			'Optimized rate: ': Optimized_rate,
+			'rate of better from rs':number_of_better_from_rs/(args.batch_size*count),
 			'rl_step': RLsteps  # Logging the RL step can be helpful
 		})
 
@@ -461,12 +553,16 @@ def Testorvali(args,tokenizer,model,dataloader,description):
 	compile_scores = []
 	pass_test_scores = []
 	Optimized_scores = []
-	count = 0
+	#count = 0
 	for batch in tqdm(dataloader,desc=description):
 		input_ids,input_masks,target_ids,target_masks,problem_ids, v0_times = [t.to(args.device) for t in batch]
-		generated_ids = model.generate(input_ids, max_length=tokenizer.model_max_length, 
-										temperature = 1, top_k = 50,num_beams=1, 
-										do_sample=True, num_return_sequences=args.num_return_sequences+1)
+		generated_ids = model.generate(
+		    input_ids, 
+		    max_length=tokenizer.model_max_length, 
+		    do_sample=False, 
+		    num_beams=4,
+		    num_return_sequences=2
+		)
 		if generated_ids.shape[-1] != tokenizer.model_max_length:
 			generated_ids = F.pad(generated_ids, (0, 512 - generated_ids.size(-1)),'constant',tokenizer.pad_token_id)
 		generated_ids = generated_ids.view(args.batch_size,-1,tokenizer.model_max_length)
@@ -498,48 +594,15 @@ def Testorvali(args,tokenizer,model,dataloader,description):
 			compile_scores.append(onecompile)
 			pass_test_scores.append(onerun)
 			Optimized_scores.append(oneoptimized)
-		if description == "Validating" and count == 50: break
+		#if description == "Validating" and count == 50: break
 		#if description == "Testing" and count == 19: break
-		count += 1
+		#count += 1
 	#print(scores)
 	compile_rate = sum(compile_scores) / len(compile_scores)
 	pass_rate = sum(pass_test_scores) / len(pass_test_scores)
 	Optimized_rate = sum(Optimized_scores) / len(Optimized_scores)
 	print(compile_rate,pass_rate,Optimized_rate)
 	return compile_rate,pass_rate,Optimized_rate
-
-def test(output_dataset):
-
-	# Constants
-	IGNORE_INDEX = -100
-	'''
-	# Sample instance
-	instances = [
-		{
-			'input_ids': {
-				'query': 'What is your name?',
-				'responses': ['I am a bot.', 'Name is ChatGPT.', 'Call me Assistant.'],
-				'scores': [0.8, 0.7, 0.9]
-			}
-		},
-		{
-			'input_ids': {
-				'query': 'Where are you from?',
-				'responses': ['I am from the cloud.', 'Virtual world is my home.'],
-				'scores': [0.85, 0.75]
-			}
-		}
-	]
-	'''
-
-	# Initializing the DataCollator
-	collator = CustomCollator(tokenizer=tokenizer)
-
-	# Testing
-	collated_data = collator(output_dataset)
-	print(collated_data)
-	
-
 
 
 if __name__ == "__main__":
@@ -571,7 +634,7 @@ if __name__ == "__main__":
 	generate_args_dict = asdict(generate_args)
 	training_args_dict = asdict(training_args)
 	merged_config = {**data_args_dict, **generate_args_dict, **training_args_dict}
-
+	current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 	if data_args.report:
 		wandb.init(
 			# set the wandb project where this run will be logged
@@ -598,6 +661,7 @@ if __name__ == "__main__":
 		test_dataset = torch.load(training_args.output_dir+'datasets/test_dataset.pth')
 		vali_dataset = torch.load(training_args.output_dir+'datasets/vali_dataset.pth')
 	else:
+		#test_dataset,vali_dataset = datahandler(data_args,generate_args, tokenizer)
 		train_dataset,test_dataset,vali_dataset = datahandler(data_args,generate_args, tokenizer)
 
 	if data_args.save_datasets:
@@ -608,22 +672,24 @@ if __name__ == "__main__":
 	
 	train_sampler = RandomSampler(train_dataset)
 	test_sampler = SequentialSampler(test_dataset)
-	vali_sampler = RandomSampler(vali_dataset)
+	vali_sampler = SequentialSampler(vali_dataset)
 	train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=generate_args.batch_size,drop_last=True)
 	test_dataloader = DataLoader(test_dataset, sampler=test_sampler, batch_size=generate_args.batch_size,drop_last=True)
 	vali_dataloader = DataLoader(vali_dataset, sampler=vali_sampler, batch_size=generate_args.batch_size,drop_last=True)
 
-	'''
+	
 	compile_rate,pass_rate,Optimized_rate = Testorvali(generate_args,tokenizer,model,test_dataloader,"Testing")
+	#compile_rate,pass_rate,Optimized_rate = Testorvali(generate_args,tokenizer,model,vali_dataloader,"Validating")
+	
 	if data_args.report:
 		wandb.log({
 			'Testing Compile rate': compile_rate,
 			'Testing Pass rate': pass_rate,
 			'Testing Optimized rate': Optimized_rate,
-			'Testing rl_step': RLsteps  # Logging the RL step can be helpful
+			'rl_step': RLsteps  # Logging the RL step can be helpful
 		})
-	'''
-
+	
+	
 	for rsteps in range(training_args.RL_steps):
 		RLsteps = rsteps
 		output_dataset = generate(data_args.report,generate_args,tokenizer,model,train_dataloader)
@@ -640,28 +706,30 @@ if __name__ == "__main__":
 						'rl_step': RLsteps  # Logging the RL step can be helpful
 			})
 		safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
-		if rsteps%4==0:
+		if (rsteps+1)%10==0:
+			current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+			torch.save(model.state_dict(), './model_param/model_{}_{}.pth'.format(training_args.RL_steps,current_time))
 			compile_rate,pass_rate,Optimized_rate = Testorvali(generate_args,tokenizer,model,vali_dataloader,"Validating")
 			if data_args.report:
 				wandb.log({
 					'Validating Compile rate': compile_rate,
 					'Validating Pass rate': pass_rate,
 					'Validating Optimized rate': Optimized_rate,
-					'Validating rl_step': RLsteps  # Logging the RL step can be helpful
+					'rl_step': RLsteps  # Logging the RL step can be helpful
 				})
+	
+	
 	compile_rate,pass_rate,Optimized_rate = Testorvali(generate_args,tokenizer,model,test_dataloader,"Testing")
 	if data_args.report:
 		wandb.log({
 			'Testing Compile rate': compile_rate,
 			'Testing Pass rate': pass_rate,
 			'Testing Optimized rate': Optimized_rate,
-			'Testing rl_step': RLsteps  # Logging the RL step can be helpful
+			'rl_step': RLsteps  # Logging the RL step can be helpful
 		})
+	
 	end_time = time.time()
 	print(end_time-start_time)
-
-
-
-
-
-
+	current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+	torch.save(model.state_dict(), './model_param/model_{}_{}.pth'.format(training_args.RL_steps,current_time))
+	

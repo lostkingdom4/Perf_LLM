@@ -50,6 +50,7 @@ def generate_dataset_from_list(data_list,db,tokenizer,description):
     program_ids = []
     times = []
     test = "Processing " + description + " data"
+    num_pass_test = 0
     if db:
         i = 0
     for data in tqdm(data_list, desc=test):
@@ -61,6 +62,7 @@ def generate_dataset_from_list(data_list,db,tokenizer,description):
         #print(elapsed_time)
         if pass_test:
             times.append(elapsed_time)
+            num_pass_test += 1
         else:
             times.append(100)
         input_data = 'Write faster version:\n'+data['code_v0_no_empty_lines']
@@ -85,6 +87,7 @@ def generate_dataset_from_list(data_list,db,tokenizer,description):
     #print(target_masks.shape)
     output_dataset = TensorDataset(input_ids,input_masks,target_ids,target_masks,program_ids,times)
     print(len(output_dataset))
+    print(num_pass_test)
     return output_dataset
 
 def process_data_chunk(args,tokenizer):
@@ -94,18 +97,19 @@ def process_data_chunk(args,tokenizer):
     chunk_number, data = args
     #print("Start {}".format(chunk_number))
     #print(data[0])
-    code_v0s = []
-    code_v1s = []
+    #code_v0s = []
+    #code_v1s = []
     input_ids = []
     input_masks = []
     target_ids = []
     target_masks = []
     program_ids = []
     times = []
+    num_pass_test = 0
     #for data_item in tqdm(data, desc='Processing {}'.format(chunk_number)):
     for data_item in data:
-        code_v0s.append(data_item['code_v0_no_empty_lines'])
-        code_v1s.append(data_item['code_v1_no_empty_lines'])
+        #code_v0s.append(data_item['code_v0_no_empty_lines'])
+        #code_v1s.append(data_item['code_v1_no_empty_lines'])
         codes = data_item['code_v0_no_empty_lines']
         #print("generating")
         a,b,pass_test,elapsed_time = lang2compiler["python"].execute_code_string(codes,data_item['problem_id'],chunk_number)
@@ -114,8 +118,9 @@ def process_data_chunk(args,tokenizer):
         #elapsed_time = 1
         if pass_test:
             times.append(elapsed_time)
+            num_pass_test += 1
         else:
-            times.append(100)
+            times.append(1000)
         input_data = 'Write faster version:\n'+data_item['code_v0_no_empty_lines']
         input_tokenized = tokenizer(input_data, return_tensors="pt", padding="max_length", truncation=True)
         target_tokenized = tokenizer(data_item['code_v1_no_empty_lines'], return_tensors="pt", padding="max_length", truncation=True)
@@ -139,7 +144,7 @@ def process_data_chunk(args,tokenizer):
     '''
     #print("Finished {}".format(chunk_number))
 
-    return input_ids, input_masks, target_ids, target_masks, program_ids, times
+    return input_ids, input_masks, target_ids, target_masks, program_ids, times, num_pass_test
 
 
 def generate_dataset_from_list_multi(data_list, db, tokenizer, description, num_processes=None):
@@ -150,19 +155,24 @@ def generate_dataset_from_list_multi(data_list, db, tokenizer, description, num_
     target_masks = []
     program_ids = []
     times = []
+    num_pass_test = 0
 
     if num_processes is None:
         num_processes = multiprocessing.cpu_count()
     print('running in {} processes'.format(num_processes))
     #print(len(data_list))
-    length = len(data_list)//num_processes
+    if len(data_list)%num_processes == 0:
+        length = len(data_list)//num_processes
+    else:
+        length = len(data_list)//num_processes + 1
     indice = [(i*length, (i+1)*length) for i in range(num_processes)]
     indice[-1] = ((num_processes-1)*length, len(data_list))
     #print(indice)
     data_chunks = [(i, data_list[index[0]:index[1]]) for i,index in enumerate(indice)]
     #partial_func = partial(process_data_chunk, tokenizer=tokenizer)
     #print(len(data_chunks[-1][1]))
-    multiprocessing.set_start_method('spawn')
+    if multiprocessing.get_start_method(allow_none=True) is None:
+        multiprocessing.set_start_method('spawn')
     with multiprocessing.Pool(num_processes) as pool:
         partial_func = partial(process_data_chunk, tokenizer=tokenizer)
         results = pool.map(partial_func, data_chunks)
@@ -183,6 +193,7 @@ def generate_dataset_from_list_multi(data_list, db, tokenizer, description, num_
             target_masks.append(res[3][i])
             program_ids.append(res[4][i])
             times.append(res[5][i])
+        num_pass_test += res[6]
     input_ids = torch.tensor(input_ids)
     input_masks = torch.tensor(input_masks)
     target_ids = torch.tensor(target_ids)
@@ -191,8 +202,8 @@ def generate_dataset_from_list_multi(data_list, db, tokenizer, description, num_
     times = torch.tensor(times)
 
     output_dataset = TensorDataset(input_ids,input_masks,target_ids,target_masks,program_ids,times)
-    print(len(output_dataset))
-    print("Finish Processing Train Data")
+    print(num_pass_test/len(output_dataset))
+    print("Finish Processing {} Data".format(description))
     return output_dataset
 
 def process_data_chunk_auto_FT(args,tokenizer):
@@ -343,16 +354,16 @@ def datahandler_auto_FT(data_args, tokenizer):
     return train_dataset
 
 def datahandler(data_args, generate_args, tokenizer):
+    start_time = time.time()
     train_data_list = read_data(data_args.train_file_path)
     test_data_list = read_data(data_args.test_file_path)
     vali_data_list = read_data(data_args.vali_file_path)
-    start_time = time.time()
-    train_dataset = generate_dataset_from_list_multi(train_data_list,generate_args.db,tokenizer,"Train",60)
+    train_dataset = generate_dataset_from_list_multi(train_data_list[:1000],generate_args.db,tokenizer,"Train",60)
+    test_dataset = generate_dataset_from_list_multi(test_data_list,generate_args.db,tokenizer,"test",50)
+    vali_dataset = generate_dataset_from_list_multi(vali_data_list,generate_args.db,tokenizer,"vali",50)
     end_time = time.time()
     print("use {} seconds".format(end_time-start_time))
-    test_dataset = generate_dataset_from_list(test_data_list,generate_args.db,tokenizer,"test")
-    vali_dataset = generate_dataset_from_list(vali_data_list,generate_args.db,tokenizer,"vali")
-
+    #return test_dataset,vali_dataset
     return train_dataset,test_dataset,vali_dataset
 
 def remove_special_token(generated_str,tokenizer):

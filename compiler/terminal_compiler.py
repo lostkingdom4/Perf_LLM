@@ -61,7 +61,7 @@ class TerminalCompiler:
         return code_string 
         
         
-    def compile_code_string(self, code_string, problem, print_error = False, compiler_path = './testfield/'):
+    def compile_code_string(self, code_string, problem, chunk_number = None, print_error = False, compiler_path = './testfield/'):
         
         if self.lang == 'Python':
             #code_string = self.remove_special_tokens(code_string)
@@ -92,12 +92,16 @@ class TerminalCompiler:
                 file_path=tf.name
                 error, output = compile_prog(file_path, self.lang2compiler[self.lang])
         '''
-        file_path = compiler_path + problem + self.lang2ext[self.lang]
+        if chunk_number == None:
+            number = 100
+        else:
+            number = chunk_number
+        file_path = compiler_path + problem +  '_{}'.format(number) + self.lang2ext[self.lang]
 
         with open(file_path, "w+", encoding = 'utf-8') as tf: 
             tf.write(code_string)
 
-        error, output = compile_prog(file_path, self.lang2compiler[self.lang])
+        error, output = compile_prog(file_path, self.lang2compiler[self.lang],chunk_number)
         
         if print_error:
             print("Error: ", error)
@@ -153,10 +157,15 @@ class TerminalCompiler:
                 file_path=tf.name
                 error, output = compile_prog(file_path, self.lang2compiler[self.lang])
         '''
-        if problem == "p03309":
-            return "p03309", "", False, 100
+        #if problem == "p03309":
+            #return "p03309", "", False, 100
 
-        file_path = execute_path + problem + self.lang2ext[self.lang]
+        if chunk_number == None:
+            number = 100
+        else:
+            number = chunk_number
+
+        file_path = execute_path + problem + '_{}'.format(number) + self.lang2ext[self.lang]
         
         with open(file_path, "w+", encoding = 'utf-8') as tf: 
             tf.write(code_string)
@@ -204,7 +213,7 @@ class TerminalCompiler:
         if error:
             return err, output, False, elapsed_time_accumulate
         else:
-            return err, output, True, elapsed_time_accumulate
+            return err, output, result, elapsed_time_accumulate
 
 
 
