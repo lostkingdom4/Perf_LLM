@@ -13,8 +13,17 @@ import threading
 import time
 from threading import Thread
 import signal
+import psutil
 
 
+def kill_processes_on_core(core_number):
+    for proc in psutil.process_iter(attrs=['pid', 'cpu_affinity']):
+        affinity = proc.info['cpu_affinity']
+        if core_number in affinity:
+            try:
+                os.kill(proc.info['pid'], signal.SIGKILL)
+            except (psutil.NoSuchProcess, PermissionError):
+                pass
 
 def compile_prog(filepath, lang,chunk_number):
     '''
@@ -56,6 +65,7 @@ def compile_prog(filepath, lang,chunk_number):
     err = '\n'.join(error)
     output = [i.decode('utf-8') for i in proc.stdout.readlines()]
     op = '\n'.join(output)
+    proc.kill()
     return err, op
 
 
@@ -109,7 +119,8 @@ def execute_prog(filepath, lang, file_contents,chunk_number):
         signal.alarm(timeout_duration)
         start_time = time.time()
         #print(file_contents)
-        proc = subprocess.Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE,shell=True)
+        #proc = subprocess.Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE, preexec_fn=os.setsid, shell=True)
+        proc = subprocess.Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE, shell=True)
         stdout_data, stderr_data = proc.communicate(input=file_contents.encode('utf-8'))
         end_time = time.time()
         #proc.kill()
@@ -122,14 +133,18 @@ def execute_prog(filepath, lang, file_contents,chunk_number):
 
     except TimeoutError:
         end_time = time.time()
-        proc.kill()  # Terminate the process if timeout occurs
-        proc.communicate()  # Ensure to consume the stdout and stderr to avoid deadlocks
+        #kill_processes_on_core(core_number+1)
+        #proc.kill()
+        subprocess.run(f"pkill -TERM -P {proc.pid}", shell=True)
+        #os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         err = "Subprocess exceeded time limit and was terminated."
         op = ''
         print(err)
 
-    elapsed_time = end_time - start_time
-    signal.alarm(0)
+    finally:
+        signal.alarm(0)  # Reset the alarm
+        elapsed_time = end_time - start_time
+
     return err, op, elapsed_time
 
 def execute_prog_thread(filepath, lang, file_contents):

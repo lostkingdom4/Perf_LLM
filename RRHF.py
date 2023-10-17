@@ -61,7 +61,7 @@ class GenerateArguments:
 	#eval_file_path: str = field(default='./data/python_splits/test.jsonl', metadata={"help": "path for test data"})
 	batch_size: int = field(default=2, metadata={"help": "batch size"})
 	fine_tuning_steps: int = field(default=100, metadata={"help": "fine tuning steps"})
-	load_from_model_path: str = field(default='./model_param/model.pth', metadata={"help": "save to model path"})
+	load_from_model_path: str = field(default='./model_param/model_5_2023-10-16_19-26-20.pth', metadata={"help": "save to model path"})
 	db: bool = field(default=False, metadata={"help": "debug mode"})
 	num_beams: int = field(default=5, metadata={"help": "number of beam search"})
 	num_return_sequences: int = field(default=4, metadata={"help": "num of return sequences for each input ids"})
@@ -512,8 +512,6 @@ def generate(report, args,tokenizer,model,train_dataloader):
 				number_of_skips += 1
 		if count == 2 and args.db:
 			break
-		elif count ==40:
-			break
 
 		count += 1
 		third_time = time.time()
@@ -574,18 +572,18 @@ def Testorvali(args,tokenizer,model,dataloader,description):
 			onecompile = False
 			onerun = False
 			oneoptimized = False
-			for generated_str in generated_strs:
+			for index_gen, generated_str in enumerate(generated_strs):
 				codes = remove_special_token(generated_str,tokenizer)
 				#print(codes)
 				#print(type(generated_str))
 				#print(remove_special_token(generated_str,tokenizer))
-				a,b,did_compile = lang2compiler["python"].compile_code_string(codes,problem)
+				a,b,did_compile = lang2compiler["python"].compile_code_string(codes,problem,index_gen)
 				#print(a)
 				#print(b)
 				#print(did_compile)
 				if did_compile:
 					onecompile = True
-					a,b,pass_test,elapsed_time = lang2compiler["python"].execute_code_string(codes,problem)
+					a,b,pass_test,elapsed_time = lang2compiler["python"].execute_code_string(codes,problem,index_gen)
 					if pass_test:
 						onerun = True
 						if v0_time > elapsed_time:
@@ -688,11 +686,17 @@ if __name__ == "__main__":
 			'Testing Optimized rate': Optimized_rate,
 			'rl_step': RLsteps  # Logging the RL step can be helpful
 		})
-	
-	
+	onetime = True
 	for rsteps in range(training_args.RL_steps):
 		RLsteps = rsteps
-		output_dataset = generate(data_args.report,generate_args,tokenizer,model,train_dataloader)
+		if onetime:
+			output_dataset = torch.load('./dataset_train/saved_dataset_1_2023-10-17_03-32-43.pt')
+			onetime = False
+		else:
+			output_dataset = generate(data_args.report,generate_args,tokenizer,model,train_dataloader)
+		onetime = False
+		current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+		torch.save(output_dataset, './dataset_train/saved_dataset_{}_{}.pt'.format(rsteps,current_time))
 		#print(len(output_dataset))	
 		#test(output_dataset)
 		data_module = make_supervised_data_module(tokenizer=tokenizer, train_dataset=output_dataset)
@@ -706,7 +710,7 @@ if __name__ == "__main__":
 						'rl_step': RLsteps  # Logging the RL step can be helpful
 			})
 		safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
-		if (rsteps+1)%10==0:
+		if (rsteps+1)%1==0:
 			current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 			torch.save(model.state_dict(), './model_param/model_{}_{}.pth'.format(training_args.RL_steps,current_time))
 			compile_rate,pass_rate,Optimized_rate = Testorvali(generate_args,tokenizer,model,vali_dataloader,"Validating")
