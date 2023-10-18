@@ -358,9 +358,9 @@ def datahandler(data_args, generate_args, tokenizer):
     train_data_list = read_data(data_args.train_file_path)
     test_data_list = read_data(data_args.test_file_path)
     vali_data_list = read_data(data_args.vali_file_path)
-    train_dataset = generate_dataset_from_list_multi(train_data_list,generate_args.db,tokenizer,"Train",60)
-    test_dataset = generate_dataset_from_list_multi(test_data_list,generate_args.db,tokenizer,"test",50)
-    vali_dataset = generate_dataset_from_list_multi(vali_data_list,generate_args.db,tokenizer,"vali",50)
+    train_dataset = generate_dataset_from_list_multi(train_data_list,generate_args.db,tokenizer,"Train",64)
+    test_dataset = generate_dataset_from_list_multi(test_data_list,generate_args.db,tokenizer,"test",64)
+    vali_dataset = generate_dataset_from_list_multi(vali_data_list,generate_args.db,tokenizer,"vali",64)
     end_time = time.time()
     print("use {} seconds".format(end_time-start_time))
     #return test_dataset,vali_dataset

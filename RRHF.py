@@ -61,7 +61,7 @@ class GenerateArguments:
 	#eval_file_path: str = field(default='./data/python_splits/test.jsonl', metadata={"help": "path for test data"})
 	batch_size: int = field(default=2, metadata={"help": "batch size"})
 	fine_tuning_steps: int = field(default=100, metadata={"help": "fine tuning steps"})
-	load_from_model_path: str = field(default='./model_param/model_5_2023-10-16_19-26-20.pth', metadata={"help": "save to model path"})
+	load_from_model_path: str = field(default='./model_param/model_1_2023-10-18_04-40-16.pth', metadata={"help": "save to model path"})
 	db: bool = field(default=False, metadata={"help": "debug mode"})
 	num_beams: int = field(default=5, metadata={"help": "number of beam search"})
 	num_return_sequences: int = field(default=4, metadata={"help": "num of return sequences for each input ids"})
@@ -419,7 +419,54 @@ def execute_in_multi_processes(codes:list, problem:str, v0_time, tokenizer, num_
 		number_of_better_from_rs += res[1]
 	return scores,number_of_better_from_rs
 
-def generate(report, args,tokenizer,model,train_dataloader):
+def process_tra_chunk(tra,tokenizer):
+	# This function will handle the tokenization and processing of a chunk of data
+	#tokenizer = RobertaTokenizer.from_pretrained('Salesforce/codet5-small')
+	#tokenizer.pad_token = tokenizer.eos_token
+	chunk_number, data = tra
+	#print("Start {}".format(chunk_number))
+	#code_v0s = []
+	#code_v1s = []
+	Compile_score = 1
+	pass_score = 1.3
+	Better_time_score = 2
+	number_of_skips = 0
+	querys = []
+	responses = []
+	program_ids = []
+	scores = []
+	num_pass_test = 0
+	number_of_better_from_rs = 0
+	#for data_item in tqdm(data, desc='Processing {}'.format(chunk_number)):
+	#print(len(data))
+	for data_item in data:
+		input_id,generated_ids4problem,codes,problem,v0_time = data_item
+		#print("len(codes): ", len(codes))
+		for index, code in enumerate(codes):
+			querys.append(input_id)
+			responses.append(generated_ids4problem[index])
+			a,b,did_compile = lang2compiler["python"].compile_code_string(code,problem,chunk_number) 
+			if did_compile:
+				a,b,pass_test,elapsed_time = lang2compiler["python"].execute_code_string(code,problem,chunk_number)
+				if pass_test:
+					if v0_time > elapsed_time:
+						scores.append(Better_time_score)
+					else:
+						scores.append(pass_score)
+				else:
+					scores.append(Compile_score)  
+			else:
+				scores.append(0)     
+		if Better_time_score in scores[-4:-1]:
+			number_of_better_from_rs += 1
+	#print("len(querys): ", len(querys))
+	#print("len(responses): ",len(responses))
+	#print("len(scores): ",len(scores))
+	#print("number_of_better_from_rs: ", number_of_better_from_rs)
+	return querys, responses, scores, number_of_better_from_rs
+
+
+def generate(report, args,tokenizer,model,train_dataloader,num_processes = 2):
 
 	querys = []
 	responses = []
@@ -430,15 +477,15 @@ def generate(report, args,tokenizer,model,train_dataloader):
 	Better_time_score = 2
 	number_of_skips = 0
 	number_of_better_from_rs = 0
-
+	tra = []
+	first_time = time.time()
 	for batch in tqdm(train_dataloader,desc="Sampling data"):
 		input_ids,input_masks,target_ids,target_masks,problem_ids,v0_times = [t.to(args.device) for t in batch]
-		first_time = time.time()
-		v0_times = v0_times.tolist()
+		#v0_times = v0_times.tolist()
 		greedy_ids = model.generate(
-		    input_ids, 
-		    max_length=tokenizer.model_max_length, 
-		    do_sample=False, 
+			input_ids, 
+			max_length=tokenizer.model_max_length, 
+			do_sample=False, 
 		)
 		generated_ids = model.generate(input_ids, max_length=tokenizer.model_max_length, 
 										temperature = 1, top_k = 50,num_beams=1, 
@@ -447,7 +494,6 @@ def generate(report, args,tokenizer,model,train_dataloader):
 		#print(generated_ids.shape)
 		#print(target_ids.shape)
 		#generated_strs = [tokenizer.decode(ids, skip_special_tokens=False, clean_up_tokenization_spaces=False) for ids in generated_ids]
-		second_time = time.time()
 		if greedy_ids.shape[-1] != tokenizer.model_max_length:
 			greedy_ids = F.pad(greedy_ids, (0, 512 - greedy_ids.size(-1)),'constant',tokenizer.pad_token_id)
 		if generated_ids.shape[-1] != tokenizer.model_max_length:
@@ -460,12 +506,51 @@ def generate(report, args,tokenizer,model,train_dataloader):
 		generated_ids = torch.cat((generated_ids,greedy_ids),dim=1)
 		generated_ids = torch.cat((generated_ids,target_ids.unsqueeze(1)),dim=1)
 		#print(generated_ids.shape)
+		#print(problem_ids.shape)
+		#print(v0_times.shape)
+		input_ids = input_ids.tolist()
+		generated_ids = generated_ids.tolist()
+		problem_ids = problem_ids.tolist()
+		v0_times = v0_times.tolist()
 		for index, generated_ids4problem in enumerate(generated_ids):
-			problem = 'p'+str(problem_ids[index].item()).zfill(5)
+			#print(len(generated_ids4problem))
+			problem = 'p'+str(problem_ids[index]).zfill(5)
 			v0_time = v0_times[index]
 			if v0_time != 1000:
-				generated_strs = []
-				codes = []
+				codes = [remove_special_token(tokenizer.decode(ids[1:], skip_special_tokens=False, 
+							clean_up_tokenization_spaces=False),tokenizer) for ids in generated_ids4problem]
+				#print(len(codes))
+				tra.append((input_ids[index],generated_ids4problem,codes,problem,v0_time))
+			else:
+				number_of_skips += 1
+		if count == 2 and args.db:
+			break
+		count += 1
+
+	#print(len(tra))
+	if len(tra)%num_processes == 0:
+		length = len(tra)//num_processes
+	else:
+		length = len(tra)//num_processes + 1
+
+	indice = [(i*length, (i+1)*length) for i in range(num_processes)]
+	indice[-1] = ((num_processes-1)*length, len(tra))
+	tra_chunk = [(i, tra[index[0]:index[1]]) for i,index in enumerate(indice)]
+	second_time = time.time()
+
+	if multiprocessing.get_start_method(allow_none=True) is None:
+		multiprocessing.set_start_method('spawn')
+	with multiprocessing.Pool(num_processes) as pool:
+		partial_func = partial(process_tra_chunk, tokenizer=tokenizer)
+		results = pool.map(partial_func, tra_chunk)
+
+	for res in results:
+		for i in range(len(res[0])):
+			querys.append(res[0][i])
+			responses.append(res[1][i])
+			scores.append(res[2][i])
+		number_of_better_from_rs += res[3]
+	'''
 				for ids in generated_ids4problem:
 					#print(ids)
 					querys.append(input_ids[index])
@@ -475,14 +560,14 @@ def generate(report, args,tokenizer,model,train_dataloader):
 					#codes.append(remove_special_token(generated_strs[-1],tokenizer))
 				#scores,number_of_better_from_rs = execute_in_multi_processes(codes,problem,v0_time,tokenizer,args.num_return_sequences+1)
 				#print(scores,number_of_better_from_rs)
-				'''
-				for ids in generated_ids4problem:
+			
+			###	for ids in generated_ids4problem:
 					#print(ids)
 					querys.append(input_ids[index])
 					responses.append(ids)
 				generated_strs = [tokenizer.decode(ids[1:], skip_special_tokens=False, 
 							clean_up_tokenization_spaces=False) for ids in generated_ids4problem]
-				'''
+				
 
 				
 				for index_gen, generated_str in enumerate(generated_strs):
@@ -513,13 +598,17 @@ def generate(report, args,tokenizer,model,train_dataloader):
 		if count == 2 and args.db:
 			break
 
-		count += 1
-		third_time = time.time()
+		#count += 1
+		#third_time = time.time()
 		#print('time1: ', second_time-first_time)
 		#print('time2: ', third_time- second_time)
+	'''
+	third_time = time.time()
+	print('time1: ', second_time-first_time)
+	print('time2: ', third_time- second_time)
 	print('skip rate: ',number_of_skips/(args.batch_size*count))
-	querys = torch.stack(querys).cpu()
-	responses = torch.stack(responses).cpu()
+	querys = torch.tensor(querys).cpu()
+	responses = torch.tensor(responses).cpu()
 	scores = torch.tensor(scores)
 	#print(querys.shape[0])
 	Compile_rate = torch.sum(scores == Compile_score).item()/scores.shape[0]
@@ -529,8 +618,9 @@ def generate(report, args,tokenizer,model,train_dataloader):
 	print('Passing rate: ',Passing_rate+Optimized_rate)
 	print('Optimized rate: ',Optimized_rate)
 	print('rate of better from rs: ',number_of_better_from_rs/(args.batch_size*count))
-	#print(querys.shape)
-	#print(responses.shape)
+	print(querys.shape)
+	print(responses.shape)
+	print(scores.shape)
 	if report:
 		wandb.log({
 			'Compile rate': Compile_rate+Passing_rate+Optimized_rate,
@@ -545,6 +635,7 @@ def generate(report, args,tokenizer,model,train_dataloader):
 	'''
 	TODO: indentation and special_token
 	'''
+
 	return output_dataset
 
 def Testorvali(args,tokenizer,model,dataloader,description):
@@ -555,11 +646,11 @@ def Testorvali(args,tokenizer,model,dataloader,description):
 	for batch in tqdm(dataloader,desc=description):
 		input_ids,input_masks,target_ids,target_masks,problem_ids, v0_times = [t.to(args.device) for t in batch]
 		generated_ids = model.generate(
-		    input_ids, 
-		    max_length=tokenizer.model_max_length, 
-		    do_sample=False, 
-		    num_beams=4,
-		    num_return_sequences=2
+			input_ids, 
+			max_length=tokenizer.model_max_length, 
+			do_sample=False, 
+			num_beams=4,
+			num_return_sequences=2
 		)
 		if generated_ids.shape[-1] != tokenizer.model_max_length:
 			generated_ids = F.pad(generated_ids, (0, 512 - generated_ids.size(-1)),'constant',tokenizer.pad_token_id)
@@ -675,7 +766,7 @@ if __name__ == "__main__":
 	test_dataloader = DataLoader(test_dataset, sampler=test_sampler, batch_size=generate_args.batch_size,drop_last=True)
 	vali_dataloader = DataLoader(vali_dataset, sampler=vali_sampler, batch_size=generate_args.batch_size,drop_last=True)
 
-	
+	'''
 	compile_rate,pass_rate,Optimized_rate = Testorvali(generate_args,tokenizer,model,test_dataloader,"Testing")
 	#compile_rate,pass_rate,Optimized_rate = Testorvali(generate_args,tokenizer,model,vali_dataloader,"Validating")
 	
@@ -686,17 +777,18 @@ if __name__ == "__main__":
 			'Testing Optimized rate': Optimized_rate,
 			'rl_step': RLsteps  # Logging the RL step can be helpful
 		})
-	onetime = True
+	'''
+	onetime = False
 	for rsteps in range(training_args.RL_steps):
 		RLsteps = rsteps
 		if onetime:
 			output_dataset = torch.load('./dataset_train/saved_dataset_1_2023-10-17_03-32-43.pt')
 			onetime = False
 		else:
-			output_dataset = generate(data_args.report,generate_args,tokenizer,model,train_dataloader)
+			output_dataset = generate(data_args.report,generate_args,tokenizer,model,train_dataloader,64)
 		onetime = False
 		current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-		torch.save(output_dataset, './dataset_train/saved_dataset_{}_{}.pt'.format(rsteps,current_time))
+		torch.save(output_dataset, './dataset_train/latest_data.pt')
 		#print(len(output_dataset))	
 		#test(output_dataset)
 		data_module = make_supervised_data_module(tokenizer=tokenizer, train_dataset=output_dataset)
@@ -712,7 +804,7 @@ if __name__ == "__main__":
 		safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
 		if (rsteps+1)%1==0:
 			current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-			torch.save(model.state_dict(), './model_param/model_{}_{}.pth'.format(training_args.RL_steps,current_time))
+			torch.save(model.state_dict(), './model_param/model_{}_{}.pth'.format(rsteps,current_time))
 			compile_rate,pass_rate,Optimized_rate = Testorvali(generate_args,tokenizer,model,vali_dataloader,"Validating")
 			if data_args.report:
 				wandb.log({
