@@ -7,6 +7,7 @@ import torch.multiprocessing as multiprocessing
 from functools import partial
 from transformers import RobertaTokenizer
 import time
+import torch.nn.functional as F
 
 lang2compiler = {
     "python": TerminalCompiler("Python"),
@@ -121,14 +122,19 @@ def process_data_chunk(args,tokenizer):
             num_pass_test += 1
         else:
             times.append(1000)
-        input_data = 'Write faster version:\n'+data_item['code_v0_no_empty_lines']
-        input_tokenized = tokenizer(input_data, return_tensors="pt", padding="max_length", truncation=True)
-        target_tokenized = tokenizer(data_item['code_v1_no_empty_lines'], return_tensors="pt", padding="max_length", truncation=True)
+        input_data = '#slower version:\n'+data_item['code_v0_no_empty_lines'] + '\n#optimized version of the same code:\n'
+        target_id = data_item['code_v1_no_empty_lines']
+        input_tokenized = tokenizer(input_data, return_tensors="pt", padding="max_length", truncation=True, max_length = 1024)
+        target_tokenized = tokenizer(target_id, return_tensors="pt", truncation=True,max_length = 1024)
         input_ids_list = input_tokenized["input_ids"].tolist()
         input_masks_list = input_tokenized["attention_mask"].tolist()
-
-        target_ids_list = target_tokenized["input_ids"].tolist()
-        target_masks_list = target_tokenized["attention_mask"].tolist()
+        
+        concatenated_tokens = torch.cat((input_tokenized['input_ids'], target_tokenized['input_ids']), dim=1)
+        concatenated_tokens = F.pad(concatenated_tokens, (0, tokenizer.model_max_length - concatenated_tokens.size(-1)),'constant',tokenizer.pad_token_id)
+        concatenated_masks = torch.cat((input_tokenized['attention_mask'], target_tokenized['attention_mask']), dim=1)
+        concatenated_masks = F.pad(concatenated_masks, (0, tokenizer.model_max_length - concatenated_masks.size(-1)),'constant',0)
+        target_ids_list = concatenated_tokens.tolist()
+        target_masks_list = concatenated_masks.tolist()
         input_ids.append(input_ids_list[-1])
         input_masks.append(input_masks_list[-1])
         target_ids.append(target_ids_list[-1])
@@ -367,7 +373,7 @@ def datahandler(data_args, generate_args, tokenizer):
     return train_dataset,test_dataset,vali_dataset
 
 def remove_special_token(generated_str,tokenizer):
-    special_tokens = [tokenizer.cls_token, tokenizer.pad_token, tokenizer.eos_token, '<pad>']  # Add other special tokens if needed
+    special_tokens = [tokenizer.pad_token, tokenizer.eos_token]  # Add other special tokens if needed
     #print(special_tokens)
     #print(generated_str[0])
     #print(special_tokens)

@@ -139,7 +139,7 @@ def execute_prog(filepath, lang, file_contents,chunk_number):
         #os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         err = "Subprocess exceeded time limit and was terminated."
         op = ''
-        print(err)
+        #print(err)
 
     finally:
         signal.alarm(0)  # Reset the alarm

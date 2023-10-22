@@ -39,11 +39,11 @@ def fine_tune(args):
 	train_dataloader = cycle(train_dataloader)
 
 	for step in tqdm(range(args.fine_tuning_steps), total=args.fine_tuning_steps):
-		input_ids,input_masks,target_ids,target_masks = [t.to(args.device) for t in next(train_dataloader)]
+		input_ids,input_masks = [t.to(args.device) for t in next(train_dataloader)]
 		#print(input_ids)
 		#print(input_ids.shape)
 		#print(tokenizer.decode(input_ids[0], skip_special_tokens=True))
-		output = model(input_ids=input_ids,attention_mask=input_masks,labels=target_ids)
+		output = model(input_ids=input_ids,attention_mask=input_masks,labels=input_ids)
 		#print(output.logits)
 		#print(output.logits.shape)
 		#a = torch.argmax(output.logits, dim=-1)
@@ -69,7 +69,7 @@ if __name__ == "__main__":
 	parser = argparse.ArgumentParser()
 	## Required parameters  
 	parser.add_argument("--train_file_path", default='./data/python_splits/train.jsonl', type=str, help="path for data")  
-	parser.add_argument("--batch_size", default=2 , type=int, help="batch size")  
+	parser.add_argument("--batch_size", default=32 , type=int, help="batch size")  
 	parser.add_argument("--fine_tuning_steps", default=100 , type=int, help="fine tuning steps")  
 	parser.add_argument("--save_to_model_path", default='./model_param/model_auto.pth' , type=str, help="save to model path")  
 	parser.add_argument("--db", default=False , type=bool, help="debug mode")  

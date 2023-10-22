@@ -1,8 +1,8 @@
 import torch
 import argparse
-from transformers import RobertaTokenizer, T5ForConditionalGeneration, T5Config
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from util import datahandler, remove_special_token
+from util_auto import datahandler, remove_special_token
 from torch.utils.data import DataLoader, Dataset, SequentialSampler, RandomSampler, TensorDataset, Sampler
 from itertools import cycle
 from tqdm import tqdm
@@ -73,7 +73,7 @@ class TrainingArguments(transformers.TrainingArguments):
 	cache_dir: Optional[str] = field(default=None)
 	optim: str = field(default="adamw_torch")
 	model_max_length: int = field(
-		default=512,
+		default=2048,
 		metadata={"help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."},
 	)
 	rrhf_weight: float = field(default=100.0)
@@ -148,30 +148,6 @@ def smart_tokenizer_and_embedding_resize(
 		output_embeddings[-num_new_tokens:] = output_embeddings_avg
 
 
-def _tokenize_fn(strings: Sequence[str], tokenizer: transformers.PreTrainedTokenizer) -> Dict:
-	"""Tokenize a list of strings."""
-	tokenized_list = [
-		tokenizer(
-			text,
-			return_tensors="pt",
-			padding="longest",
-			max_length=tokenizer.model_max_length,
-			truncation=True,
-		)
-		for text in strings
-	]
-	input_ids = labels = [tokenized.input_ids[0] for tokenized in tokenized_list]
-	input_ids_lens = labels_lens = [
-		tokenized.input_ids.ne(tokenizer.pad_token_id).sum().item() for tokenized in tokenized_list
-	]
-	return dict(
-		input_ids=input_ids,
-		labels=labels,
-		input_ids_lens=input_ids_lens,
-		labels_lens=labels_lens,
-	)
-
-
 class ScoreDataset(Dataset):
 	"""Dataset for supervised fine-tuning."""
 
@@ -214,6 +190,7 @@ class CustomCollator(DataCollatorWithPadding):
 
 	def __call__(self, batch):
 		# Separate the input_ids and labels from the batch
+		print(batch[1])
 		idxs = []
 		all_scores = []
 		input_ids = []
@@ -228,20 +205,22 @@ class CustomCollator(DataCollatorWithPadding):
 		'''
 
 		for idx, item in enumerate(batch):
-			#print(item)
 			input_ids.append(item[0])
 			labels.append(item[1])
 			all_scores.append(item[2])
 			idxs.append([idx])
-		
 		# Pad the sequences
 		#padded_input = self.tokenizer.pad({"input_ids": input_ids}, return_tensors="pt", padding="max_length", max_length=512)
 		
 		# Convert labels to tensor
 		#print("labels",labels)
 		input_ids = torch.stack(input_ids)
+		print("input_ids",input_ids.shape)
+		if input_ids.shape[-1] != tokenizer.model_max_length:
+			input_ids = F.pad(input_ids, (0, tokenizer.model_max_length - input_ids.size(-1)),'constant',tokenizer.pad_token_id)
+		print("input_ids",input_ids.shape)
 		labels = torch.stack(labels)
-		#print("input_ids.shape", input_ids.shape)
+		print("labels.shape", labels.shape)
 		#decoder_input_ids = torch.unsqueeze()
 		#decoder_input_ids = decoder_input_ids.repeat(input_ids.shape[0], 1)
 		#decoder_attention_mask = decoder_attention_mask.repeat(input_ids.shape[0], 1)
@@ -343,6 +322,7 @@ class RRHFTrainer(Trainer):
 		#print(inputs.keys())
 		#print(inputs.get('input_ids').shape)
 		#output_ids = model.generate(input_ids=inputs.get('input_ids'), attention_mask=inputs.get('attention_mask'),max_length=tokenizer.model_max_length)
+		input_ids = inputs.get('input_ids')
 		output = model(input_ids=inputs.get('input_ids'), attention_mask=inputs.get('attention_mask'),
 						labels=inputs.get('labels')) # (batch * cand) * L * V		
 		#logits = model(input_ids=inputs.get('input_ids'), attention_mask=inputs.get('attention_mask'),decoder_input_ids=inputs.get('decoder_input_ids'),decoder_attention_mask=inputs.get('decoder_attention_mask'))[0] # (batch * cand) * L * V
@@ -484,10 +464,11 @@ def generate(report, args,tokenizer,model,train_dataloader,num_processes = 2):
 		#v0_times = v0_times.tolist()
 		greedy_ids = model.generate(
 			input_ids, 
+			attention_mask=input_masks,
 			max_length=tokenizer.model_max_length, 
 			do_sample=False, 
 		)
-		generated_ids = model.generate(input_ids, max_length=tokenizer.model_max_length, 
+		generated_ids = model.generate(input_ids, attention_mask=input_masks, max_length=tokenizer.model_max_length, 
 										temperature = 1, top_k = 50,num_beams=1, 
 										do_sample=True, num_return_sequences=args.num_return_sequences-2)
 		#print(greedy_ids.shape)
@@ -495,9 +476,9 @@ def generate(report, args,tokenizer,model,train_dataloader,num_processes = 2):
 		#print(target_ids.shape)
 		#generated_strs = [tokenizer.decode(ids, skip_special_tokens=False, clean_up_tokenization_spaces=False) for ids in generated_ids]
 		if greedy_ids.shape[-1] != tokenizer.model_max_length:
-			greedy_ids = F.pad(greedy_ids, (0, 512 - greedy_ids.size(-1)),'constant',tokenizer.pad_token_id)
+			greedy_ids = F.pad(greedy_ids, (0, tokenizer.model_max_length - greedy_ids.size(-1)),'constant',tokenizer.pad_token_id)
 		if generated_ids.shape[-1] != tokenizer.model_max_length:
-			generated_ids = F.pad(generated_ids, (0, 512 - generated_ids.size(-1)),'constant',tokenizer.pad_token_id)
+			generated_ids = F.pad(generated_ids, (0, tokenizer.model_max_length - generated_ids.size(-1)),'constant',tokenizer.pad_token_id)
 		#print(generated_ids.shape)
 		greedy_ids = greedy_ids.view(args.batch_size,-1,tokenizer.model_max_length)
 		generated_ids = generated_ids.view(args.batch_size,-1,tokenizer.model_max_length)
@@ -649,42 +630,48 @@ def Testorvali(args,tokenizer,model,dataloader,description):
 		input_ids,input_masks,target_ids,target_masks,problem_ids, v0_times = [t.to(args.device) for t in batch]
 		generated_ids = model.generate(
 			input_ids, 
+			attention_mask=input_masks,
 			max_length=tokenizer.model_max_length, 
 			do_sample=False, 
 			num_beams=4,
 			num_return_sequences=2
 		)
+		print(generated_ids.shape)
+		print(tokenizer.model_max_length)
 		if generated_ids.shape[-1] != tokenizer.model_max_length:
-			generated_ids = F.pad(generated_ids, (0, 512 - generated_ids.size(-1)),'constant',tokenizer.pad_token_id)
+			generated_ids = F.pad(generated_ids, (0, tokenizer.model_max_length - generated_ids.size(-1)),'constant',tokenizer.pad_token_id)
 		generated_ids = generated_ids.view(args.batch_size,-1,tokenizer.model_max_length)
 		for index,generated_ids4problem in enumerate(generated_ids):
 			problem = 'p'+str(problem_ids[index].item()).zfill(5)
+			print(problem)
 			v0_time = v0_times[index]
-			generated_strs = [tokenizer.decode(ids[1:], skip_special_tokens=False, 
+			generated_strs = [tokenizer.decode(ids[1024:], skip_special_tokens=False, 
 				clean_up_tokenization_spaces=False) for ids in generated_ids4problem]
 			onecompile = False
 			onerun = False
 			oneoptimized = False
 			for index_gen, generated_str in enumerate(generated_strs):
 				codes = remove_special_token(generated_str,tokenizer)
-				#print(codes)
+				print(codes)
 				#print(type(generated_str))
 				#print(remove_special_token(generated_str,tokenizer))
 				a,b,did_compile = lang2compiler["python"].compile_code_string(codes,problem,index_gen)
-				#print(a)
-				#print(b)
-				#print(did_compile)
+				print(a)
+				print(b)
+				print(did_compile)
 				if did_compile:
 					onecompile = True
 					a,b,pass_test,elapsed_time = lang2compiler["python"].execute_code_string(codes,problem,index_gen)
+					print(pass_test)
 					if pass_test:
 						onerun = True
 						if v0_time > elapsed_time:
+							print(elapsed_time)
 							sp.append(v0_time/elapsed_time)
 							RTR.append((v0_time - elapsed_time)/v0_time *100)
 							diff_t = v0_time - elapsed_time
 							oneoptimized = True
-			
+
 			compile_scores.append(onecompile)
 			pass_test_scores.append(onerun)
 			Optimized_scores.append(oneoptimized)
@@ -723,8 +710,6 @@ if __name__ == "__main__":
 	'''
 	parser = transformers.HfArgumentParser((DataArguments,GenerateArguments,TrainingArguments))
 	data_args,generate_args,training_args = parser.parse_args_into_dataclasses()
-	#training_args.per_device_train_batch_size = 4
-	#if generate_args.db: training_args.RL_steps = 1
 	generate_args.device =  torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	data_args_dict = asdict(data_args)
 	generate_args_dict = asdict(generate_args)
@@ -740,9 +725,9 @@ if __name__ == "__main__":
 			name=current_time,
 		)
 
-	tokenizer = RobertaTokenizer.from_pretrained('Salesforce/codet5-small')
+	tokenizer = AutoTokenizer.from_pretrained("Salesforce/codegen-350M-mono",padding_side='left')
 	tokenizer.pad_token = tokenizer.eos_token
-	model = T5ForConditionalGeneration.from_pretrained('Salesforce/codet5-small')
+	model = AutoModelForCausalLM.from_pretrained("Salesforce/codegen-350M-mono")
 	model.load_state_dict(torch.load(generate_args.load_from_model_path))
 	model.to(generate_args.device)
 	#print("Special tokens:", tokenizer.all_special_tokens)
@@ -784,7 +769,6 @@ if __name__ == "__main__":
 			'Testing Optimized rate': Optimized_rate,
 			'rl_step': RLsteps  # Logging the RL step can be helpful
 		})
-		
 	exit()
 	onetime = False
 	for rsteps in range(training_args.RL_steps):
