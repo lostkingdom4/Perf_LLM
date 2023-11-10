@@ -695,8 +695,14 @@ def Testorvali(args,tokenizer,model,dataloader,description):
 	compile_rate = sum(compile_scores) / len(compile_scores)
 	pass_rate = sum(pass_test_scores) / len(pass_test_scores)
 	Optimized_rate = sum(Optimized_scores) / len(Optimized_scores)
-	sp_ave = sum(sp)/len(sp)
-	RTR_ave = sum(RTR)/len(RTR)
+	if len(sp) != 0:
+		sp_ave = sum(sp)/len(sp)
+	else:
+		sp_ave = 0
+	if len(RTR) != 0:
+		RTR_ave = sum(RTR)/len(RTR)
+	else:
+		RTR_ave = 0
 	print(compile_rate,pass_rate,Optimized_rate,sp_ave,RTR_ave)
 	return compile_rate,pass_rate,Optimized_rate
 
@@ -785,7 +791,7 @@ if __name__ == "__main__":
 			'rl_step': RLsteps  # Logging the RL step can be helpful
 		})
 		
-	exit()
+	#exit()
 	onetime = False
 	for rsteps in range(training_args.RL_steps):
 		RLsteps = rsteps
@@ -796,7 +802,7 @@ if __name__ == "__main__":
 			output_dataset = generate(data_args.report,generate_args,tokenizer,model,train_dataloader,64)
 		onetime = False
 		current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-		torch.save(output_dataset, './dataset_train/latest_data.pt')
+		#torch.save(output_dataset, './dataset_train/latest_data.pt')
 		#print(len(output_dataset))	
 		#test(output_dataset)
 		data_module = make_supervised_data_module(tokenizer=tokenizer, train_dataset=output_dataset)
@@ -812,7 +818,7 @@ if __name__ == "__main__":
 		safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
 		if (rsteps+1)%1==0:
 			current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-			torch.save(model.state_dict(), './model_param/model_{}_{}.pth'.format(rsteps,current_time))
+			torch.save(model.state_dict(), './model_param/model_vali.pth')
 			compile_rate,pass_rate,Optimized_rate = Testorvali(generate_args,tokenizer,model,vali_dataloader,"Validating")
 			if data_args.report:
 				wandb.log({
@@ -835,5 +841,5 @@ if __name__ == "__main__":
 	end_time = time.time()
 	print(end_time-start_time)
 	current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-	torch.save(model.state_dict(), './model_param/model_{}_{}.pth'.format(training_args.RL_steps,current_time))
+	torch.save(model.state_dict(), './model_param/model_vali.pth'.format(training_args.RL_steps,current_time))
 	

@@ -355,7 +355,7 @@ def datahandler_auto_FT(data_args, tokenizer):
 
 def datahandler(data_args, generate_args, tokenizer):
     start_time = time.time()
-    train_data_list = read_data(data_args.train_file_path)[:1000]
+    train_data_list = read_data(data_args.train_file_path)
     test_data_list = read_data(data_args.test_file_path)
     vali_data_list = read_data(data_args.vali_file_path)
     train_dataset = generate_dataset_from_list_multi(train_data_list,generate_args.db,tokenizer,"Train",50)

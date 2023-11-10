@@ -1,0 +1,1 @@
+python inital_measurement.py --num_process 50 \
